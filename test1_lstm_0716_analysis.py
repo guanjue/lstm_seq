@@ -212,25 +212,32 @@ def one_conv_layer_net(sec_d,thr_d,for_d,first_filter_out,sec_filter_out,full_cn
 	### 
 	#pool_shape1=sec_d*thr_d/max_pool1
 	#h_conv1 = tf.nn.relu(conv2d(x_image, W_conv1) + b_conv1)
-	h_conv1 = tf.nn.softsign(tf.nn.relu(conv2d(x_image, W_conv1) + b_conv1))
-	#h_conv1 = h_conv1/abs(h_conv1)
+	h_conv1 = tf.nn.relu((conv2d(x_image, W_conv1) + b_conv1))
+	h_conv1_nozero = tf.cast(h_conv1 > 0, h_conv1.dtype)
+	p_hat=tf.reduce_sum(h_conv1_nozero)
+	#h_conv1_activate = tf.cast(h_conv1 > 0, h_conv1.dtype)
+	p=0.1
+	kl=p*tf.log(p/p_hat)+(1-p)*tf.log((1-p)/1-p_hat)
 	print(h_conv1.shape)
 	#h_conv1_activate_0 = tf.transpose(tf.nn.softsign([h_conv1[:,:,:,0]]),[1, 2, 3, 0])
 	#h_conv1_activate_1 = tf.transpose(tf.nn.softsign([h_conv1[:,:,:,1]]),[1, 2, 3, 0])
+	#h_conv1_activate_2 = tf.transpose(tf.nn.softsign([h_conv1[:,:,:,2]]),[1, 2, 3, 0])
+	#h_conv1_activate_3 = tf.transpose(tf.nn.softsign([h_conv1[:,:,:,3]]),[1, 2, 3, 0])
+
 	#print(h_conv1_activate_0.shape)
 	#print(h_conv1_activate_1.shape)
 	#h_conv1_activate=tf.concat([h_conv1_activate_0,h_conv1_activate_1],3)
 	#keep_prob1 = tf.placeholder(tf.float32)
 	#h_conv1_drop = tf.nn.dropout(h_conv1, keep_prob1)
-	h_pool1_wta = tf.reduce_max(h_conv1, reduction_indices=[3], keep_dims=True)
+	#h_pool1_wta = tf.reduce_max(h_conv1, reduction_indices=[3], keep_dims=True)
 
 
 	# Permuting batch_size and n_steps
 	#h_conv1_out = tf.transpose(h_pool1, [1, 0, 2, 3])
 	# Reshaping to (n_steps*batch_size, n_input)
-	x_transpose = tf.transpose(h_pool1_wta, [1, 0, 2, 3])
-	#x_reshape = tf.reshape(x_transpose, [-1, first_filter_out])
-	x_reshape = tf.reshape(x_transpose, [-1, 1])
+	x_transpose = tf.transpose(h_conv1, [1, 0, 2, 3])
+	x_reshape = tf.reshape(x_transpose, [-1, first_filter_out])
+	#x_reshape = tf.reshape(x_transpose, [-1, 1])
 	print('reshape:')
 	print(x_reshape.shape)
 	# Split to get a list of 'n_steps' tensors of shape (batch_size, n_input)
@@ -278,7 +285,7 @@ def one_conv_layer_net(sec_d,thr_d,for_d,first_filter_out,sec_filter_out,full_cn
 	### Densely Connected Layer
 	### a fully-connected layer with 1024 neurons to allow processing on the entire seq.
 
-	cross_entropy = tf.nn.softmax_cross_entropy_with_logits(logits=y_conv, labels=y_)
+	cross_entropy = tf.nn.softmax_cross_entropy_with_logits(logits=y_conv, labels=y_) + tf.reduce_sum(kl)
 	train_step = tf.train.AdamOptimizer(training_speed).minimize(cross_entropy)
 	correct_prediction = tf.equal(tf.argmax(y_conv,1), tf.argmax(y_,1))
 	accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
@@ -343,7 +350,39 @@ def one_conv_layer_net(sec_d,thr_d,for_d,first_filter_out,sec_filter_out,full_cn
 			r1.write(str(records[len(records)-1])+'\n')
 		r1.close()
 
+	def write3d_array(array,output):
+		r1=open(output,'w')
+		for records in array:
+			tmp_label=np.argmax(records,axis=1)
+			for i in range(0,len(tmp_label)-1):
+				r1.write(str(tmp_label[i])+'\t')
+			r1.write(str(tmp_label[len(tmp_label)-1])+'\n')
+		r1.close()
+
+	def write2d_array_transfac(array,output):
+		r1=open(output,'w')
+		r1.write('ID'+'\t'+'output'+'\n')
+		r1.write('BF'+'\t'+'output'+'\n')
+		r1.write('P0'+'\t'+'A'+'\t'+'C'+'\t'+'G'+'\t'+'T'+'\n')
+		n=1
+		for records in array:
+			r1.write('0'+str(n)+'\t')
+			for i in range(0,len(records)-1):
+				r1.write(str(records[i])+'\t')
+			r1.write(str(records[len(records)-1])+'\n')
+			n=n+1
+		r1.close()
+
+
 	W_conv1_layer=np.array(sess.run(W_conv1, feed_dict={x: matrix_K_L_M_test, y_: ys_test, keep_prob1: 1.0, keep_prob2: 1.0}))
+
+	for i in range(0,first_filter_out):
+		W_conv1_layer0=W_conv1_layer[:,0,:,i]
+		W_conv1_layer0=(W_conv1_layer0-np.min(W_conv1_layer0))
+		W_conv1_layer0=(W_conv1_layer0/W_conv1_layer0.sum(axis=1)[:,None])*1000
+		#W_conv1_layer0=np.transpose(W_conv1_layer0,(1,0))
+		write2d_array_transfac(W_conv1_layer0,'W_conv1_layer'+str(i)+'.txt')
+
 	print('W_conv1_layer')
 	print(W_conv1_layer.shape)
 	#np.savetxt('W_conv1_layer.txt', W_conv1_layer)
@@ -355,14 +394,18 @@ def one_conv_layer_net(sec_d,thr_d,for_d,first_filter_out,sec_filter_out,full_cn
 	write2d_array(rnn_hidden,'rnn_hidden_state_pos0.txt')
 	#np.savetxt('rnn_hidden_state_pos0.txt', np.transpose(rnn_hidden_state[:,0:2347,:],(1,0,2)) )
 
-	h_pool1_wta_array=np.array(sess.run(h_pool1_wta, feed_dict={x: matrix_K_L_M_test, y_: ys_test, keep_prob1: 1.0, keep_prob2: 1.0}))
-	print('h_pool1_wta_array')
-	print(h_pool1_wta_array.shape)
+	#h_conv1_activate_array=np.array(sess.run(h_conv1_activate, feed_dict={x: matrix_K_L_M_test, y_: ys_test, keep_prob1: 1.0, keep_prob2: 1.0}))
+	#print('h_pool1_wta_array')
+	#print(h_pool1_wta_array.shape)
 	#np.savetxt('h_conv1_array.txt', h_conv1_array)
 
 	h_conv1_array_pos=np.array(sess.run(h_conv1, feed_dict={x: matrix_K_L_M_test, y_: ys_test, keep_prob1: 1.0, keep_prob2: 1.0}))
 	print('h_pool1_wta_array')
 	print(h_conv1_array_pos.shape)
+
+	h_conv1_nozero_array_pos=np.array(sess.run(h_conv1_nozero, feed_dict={x: matrix_K_L_M_test, y_: ys_test, keep_prob1: 1.0, keep_prob2: 1.0}))
+	print('h_pool1_wta_array')
+	print(h_conv1_nozero_array_pos.shape)
 
 	y_conv_array=np.array(sess.run(y_conv, feed_dict={x: matrix_K_L_M_test, y_: ys_test, keep_prob1: 1.0, keep_prob2: 1.0}))[0:2347,:]
 	print('y_conv_array')
@@ -372,17 +415,18 @@ def one_conv_layer_net(sec_d,thr_d,for_d,first_filter_out,sec_filter_out,full_cn
 	print(y_conv_array[order,0][0:10])
 	print(y_conv_array[order,0][-10:])
 
-	write2d_array(rnn_hidden[order,:],'rnn_hidden_state_pos0.txt')
-	write2d_array(np.array(h_pool1_wta_array[order,:,0,0],dtype=float),'h_pool1_wta_array.txt')
 
-	write2d_array(np.array(h_conv1_array_pos[order,:,0,0],dtype=float),'h_conv1_array_pos0.txt')
-	write2d_array(np.array(h_conv1_array_pos[order,:,0,1],dtype=float),'h_conv1_array_pos1.txt')
-	write2d_array(np.array(h_conv1_array_pos[order,:,0,2],dtype=float),'h_conv1_array_pos2.txt')
-	write2d_array(np.array(h_conv1_array_pos[order,:,0,3],dtype=float),'h_conv1_array_pos3.txt')
-	#write2d_array(np.array(h_conv1_array_pos[order,:,0,4],dtype=float),'h_conv1_array_pos4.txt')
-	#write2d_array(np.array(h_conv1_array_pos[order,:,0,5],dtype=float),'h_conv1_array_pos5.txt')
-	#write2d_array(np.array(h_conv1_array_pos[order,:,0,6],dtype=float),'h_conv1_array_pos6.txt')
-	#write2d_array(np.array(h_conv1_array_pos[order,:,0,7],dtype=float),'h_conv1_array_pos7.txt')
+	#write3d_array(np.array(h_conv1_activate_array[order,:,0,:],dtype=float),'h_conv1_activate_array.txt')
+
+
+	write2d_array(rnn_hidden[order,:],'rnn_hidden_state_pos0.txt')
+	
+	for i in range(0,first_filter_out):
+		write2d_array(np.array(h_conv1_array_pos[order,:,0,i],dtype=float),'h_conv1_array_pos'+str(i)+'.txt')
+
+
+	for i in range(0,first_filter_out):
+		write2d_array(np.array(h_conv1_nozero_array_pos[order,:,0,i],dtype=float),'h_conv1_nozero_array_pos'+str(i)+'.txt')
 
 	#np.savetxt('h_conv1_array_pos0.txt', np.array(h_conv1_array_pos[0:2347,:,0],dtype=float))
 	#np.savetxt('h_conv1_array_pos1.txt', np.array(h_conv1_array_pos[0:2347,:,1],dtype=float))
